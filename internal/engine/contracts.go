@@ -16,19 +16,21 @@ type contractState struct {
 
 // ApplyContract records a contract line. The history only grows when the name,
 // state or deleted flag differs from the last entry. Lines arrive in time order.
-func (e *Engine) ApplyContract(c feed.Contract) {
+// It reports whether the history grew.
+func (e *Engine) ApplyContract(c feed.Contract) bool {
 	e.now = c.Time
 	h := e.contracts[c.ContractID]
 	if n := len(h); n > 0 {
 		last := h[n-1]
 		if last.name == c.Name && last.state == c.State && last.deleted == c.Deleted {
-			return
+			return false
 		}
 	}
 	e.contracts[c.ContractID] = append(h, contractState{c.Time, c.Name, c.State, c.Deleted})
 	if !slices.Contains(e.names[c.Name], c.ContractID) {
 		e.names[c.Name] = append(e.names[c.Name], c.ContractID)
 	}
+	return true
 }
 
 // at returns the history entry in force at time t, if any.

@@ -96,6 +96,22 @@ func (b *Book) levelQty(buy bool, price int64) int64 {
 	return 0
 }
 
+// setLevel sets the total at a price to qty: it inserts the level, overwrites
+// it, or removes it when qty is 0. Removing a missing level does nothing.
+func (b *Book) setLevel(buy bool, price, qty int64) {
+	levels := b.side(buy)
+	i, found := find(*levels, buy, price)
+	switch {
+	case qty == 0 && found:
+		*levels = slices.Delete(*levels, i, i+1)
+	case qty == 0:
+	case found:
+		(*levels)[i].Qty = qty
+	default:
+		*levels = slices.Insert(*levels, i, Level{price, qty})
+	}
+}
+
 // Bids returns a copy of the bid levels, best (highest) first.
 func (b *Book) Bids() []Level { return slices.Clone(b.bids) }
 

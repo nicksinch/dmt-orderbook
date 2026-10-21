@@ -9,17 +9,49 @@ import (
 	"time"
 
 	"dmt-orderbook/internal/feed"
+	"dmt-orderbook/internal/store"
 )
 
 func main() {
+	if len(os.Args) == 4 && os.Args[1] == "--store" {
+		if err := bookatStore(os.Args[2], os.Args[3]); err != nil {
+			fmt.Fprintln(os.Stderr, "bookat:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) != 4 {
 		fmt.Fprintln(os.Stderr, "usage: bookat <localview.jsonl> <contracts.jsonl> <moments.txt>")
+		fmt.Fprintln(os.Stderr, "       bookat --store <dir> <moments.txt>")
 		os.Exit(2)
 	}
 	if err := bookat(os.Args[1], os.Args[2], os.Args[3]); err != nil {
 		fmt.Fprintln(os.Stderr, "bookat:", err)
 		os.Exit(1)
 	}
+}
+
+// bookatStore answers the moments from the store instead of the input files.
+func bookatStore(dir, momentsPath string) error {
+	mf, err := os.Open(momentsPath)
+	if err != nil {
+		return err
+	}
+	defer mf.Close()
+	ms, err := parseMoments(mf)
+	if err != nil {
+		return err
+	}
+	r, err := store.Open(dir)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	if err := runMomentsStore(r, ms, os.Stdout); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "moments: %d, elapsed: %s\n", len(ms), time.Since(start))
+	return nil
 }
 
 func bookat(localviewPath, contractsPath, momentsPath string) error {

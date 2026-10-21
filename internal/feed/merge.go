@@ -76,6 +76,7 @@ func (in *input) fill() error {
 // Merger merges the two files into one stream ordered by time.
 type Merger struct {
 	localview, contracts *input
+	err                  error // sticky: once set, every Next returns it
 }
 
 func NewMerger(localview, contracts io.Reader, localviewName, contractsName string) *Merger {
@@ -88,10 +89,15 @@ func NewMerger(localview, contracts io.Reader, localviewName, contractsName stri
 // Next returns records ordered by time; contracts first on equal times.
 // It returns io.EOF when both files are done. Errors read "<name>:<line>: <cause>".
 func (m *Merger) Next() (Record, error) {
+	if m.err != nil {
+		return Record{}, m.err
+	}
 	if err := m.contracts.fill(); err != nil {
+		m.err = err
 		return Record{}, err
 	}
 	if err := m.localview.fill(); err != nil {
+		m.err = err
 		return Record{}, err
 	}
 	c, l := m.contracts, m.localview
