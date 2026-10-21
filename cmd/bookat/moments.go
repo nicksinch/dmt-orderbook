@@ -1,0 +1,156 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+
+	"dmt-orderbook/internal/engine"
+	"dmt-orderbook/internal/feed"
+)
+
+// moment is one question: the book of one product, or the top of all, at time T.
+type moment struct {
+	Kind string // "book" or "top"
+	Name string // book only
+	T    int64
+}
+
+// parseMoments reads "book <name> <T>" and "top <T>" lines, skipping blank ones.
+// T must not go backwards from one moment to the next.
+func parseMoments(r io.Reader) ([]moment, error) {
+	var ms []moment
+	sc := bufio.NewScanner(r)
+	for n := 1; sc.Scan(); n++ {
+		f := strings.Fields(sc.Text())
+		if len(f) == 0 {
+			continue
+		}
+		var m moment
+		var ts string
+		switch {
+		case f[0] == "book" && len(f) == 3:
+			m.Kind, m.Name, ts = "book", f[1], f[2]
+		case f[0] == "top" && len(f) == 2:
+			m.Kind, ts = "top", f[1]
+		default:
+			return nil, fmt.Errorf("moments line %d: want \"book <name> <T>\" or \"top <T>\", got %q", n, sc.Text())
+		}
+		t, err := feed.ParseTime(ts)
+		if err != nil {
+			return nil, fmt.Errorf("moments line %d: %w", n, err)
+		}
+		m.T = t
+		if len(ms) > 0 && t < ms[len(ms)-1].T {
+			return nil, fmt.Errorf("moments line %d: time goes backwards", n)
+		}
+		ms = append(ms, m)
+	}
+	return ms, sc.Err()
+}
+
+// stats counts the records applied.
+type stats struct{ Localview, Contracts int }
+
+type bookJSON struct {
+	Bid [][2]int64 `json:"bid"`
+	Ask [][2]int64 `json:"ask"`
+}
+
+type topJSON struct {
+	Bid *[2]int64 `json:"bid"`
+	Ask *[2]int64 `json:"ask"`
+}
+
+// runMoments drives the merge and writes one JSON line per moment, in input order.
+// It reads one record ahead and applies it only once its time is <= the moment's T.
+// It stops after the last moment; at end of input the rest are answered from the final state.
+func runMoments(m *feed.Merger, ms []moment, w io.Writer) (stats, error) {
+	var st stats
+	e := engine.New()
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+
+	var pending *feed.Record
+	eof := false
+	for _, mo := range ms {
+		for {
+			if pending == nil && !eof {
+				rec, err := m.Next()
+				if err == io.EOF {
+					eof = true
+				} else if err != nil {
+					return st, err
+				} else {
+					pending = &rec
+				}
+			}
+			if pending == nil || pending.Time() > mo.T {
+				break
+			}
+			if pending.Source == feed.SourceLocalview {
+				e.ApplyLocalview(*pending.Localview)
+				st.Localview++
+			} else {
+				e.ApplyContract(*pending.Contract)
+				st.Contracts++
+			}
+			pending = nil
+		}
+		var out any
+		var err error
+		if mo.Kind == "book" {
+			out, err = bookAnswer(e, mo)
+		} else {
+			out, err = topAnswer(e, mo.T)
+		}
+		if err != nil {
+			return st, err
+		}
+		if err := enc.Encode(out); err != nil {
+			return st, err
+		}
+	}
+	return st, nil
+}
+
+func bookAnswer(e *engine.Engine, mo moment) (map[string]*bookJSON, error) {
+	pb, ok, err := e.BookByName(mo.Name, mo.T)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return map[string]*bookJSON{mo.Name: nil}, nil
+	}
+	return map[string]*bookJSON{mo.Name: {Bid: pairs(pb.Bids), Ask: pairs(pb.Asks)}}, nil
+}
+
+// pairs converts levels to [price, qty] pairs; never nil, so it prints as [].
+func pairs(ls []engine.Level) [][2]int64 {
+	out := make([][2]int64, len(ls))
+	for i, l := range ls {
+		out[i] = [2]int64{l.Price, l.Qty}
+	}
+	return out
+}
+
+func topAnswer(e *engine.Engine, t int64) (map[string]topJSON, error) {
+	entries, err := e.Top(t)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]topJSON)
+	for _, te := range entries {
+		var tj topJSON
+		if te.Bid != nil {
+			tj.Bid = &[2]int64{te.Bid.Price, te.Bid.Qty}
+		}
+		if te.Ask != nil {
+			tj.Ask = &[2]int64{te.Ask.Price, te.Ask.Qty}
+		}
+		out[te.Name] = tj
+	}
+	return out, nil
+}

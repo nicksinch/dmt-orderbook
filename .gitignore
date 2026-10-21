@@ -1,0 +1,9 @@
+task/contracts.jsonl
+task/localview.jsonl
+.mcp.json
+.idea
+tmp/
+__pycache__/
+.DS_Store
+.superpowers
+docs
