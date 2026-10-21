@@ -9,6 +9,7 @@ import (
 
 	"dmt-orderbook/internal/engine"
 	"dmt-orderbook/internal/feed"
+	"dmt-orderbook/internal/store"
 )
 
 // moment is one question: the book of one product, or the top of all, at time T.
@@ -99,21 +100,43 @@ func runMoments(m *feed.Merger, ms []moment, w io.Writer) (stats, error) {
 			}
 			pending = nil
 		}
-		var out any
-		var err error
-		if mo.Kind == "book" {
-			out, err = bookAnswer(e, mo)
-		} else {
-			out, err = topAnswer(e, mo.T)
-		}
-		if err != nil {
-			return st, err
-		}
-		if err := enc.Encode(out); err != nil {
+		if err := answer(enc, e, mo); err != nil {
 			return st, err
 		}
 	}
 	return st, nil
+}
+
+// answer encodes the book or top answer for one moment from the engine state at mo.T.
+func answer(enc *json.Encoder, e *engine.Engine, mo moment) error {
+	var out any
+	var err error
+	if mo.Kind == "book" {
+		out, err = bookAnswer(e, mo)
+	} else {
+		out, err = topAnswer(e, mo.T)
+	}
+	if err != nil {
+		return err
+	}
+	return enc.Encode(out)
+}
+
+// runMomentsStore answers each moment from the store with a fresh StateAt,
+// in the same JSON format as runMoments.
+func runMomentsStore(r *store.Reader, ms []moment, w io.Writer) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	for _, mo := range ms {
+		e, err := r.StateAt(mo.T)
+		if err != nil {
+			return err
+		}
+		if err := answer(enc, e, mo); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func bookAnswer(e *engine.Engine, mo moment) (map[string]*bookJSON, error) {

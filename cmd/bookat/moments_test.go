@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"dmt-orderbook/internal/feed"
+	"dmt-orderbook/internal/store"
 )
 
 // at renders a timestamp on 2026-09-24 at 10:00:00 plus us microseconds.
@@ -152,5 +154,43 @@ func TestRunMomentsMergerErrorIsFatal(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := runMoments(merger([]string{"not json"}, nil), ms, &out); err == nil {
 		t.Error("want error")
+	}
+}
+
+// The store must answer every moment exactly as replaying the input does.
+func TestRunMomentsStoreMatchesInput(t *testing.T) {
+	ct := []string{contractLine(1000)}
+	lv := []string{
+		deltaLine(2000, "100", ""),
+		deltaLine(3000, "101", "110"),
+		deltaLine(5000, "", "109"),
+	}
+	var moments strings.Builder
+	for _, us := range []int{0, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000} {
+		fmt.Fprintf(&moments, "book QH-1 %s\ntop %s\nbook NOPE %s\n", at(us), at(us), at(us))
+	}
+	want := run(t, lv, ct, moments.String())
+	ms, err := parseMoments(strings.NewReader(moments.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cp := range []int64{1, 1 << 20} {
+		dir := filepath.Join(t.TempDir(), "s")
+		o := store.DefaultOptions()
+		o.CheckpointBytes = cp
+		if _, err := store.Ingest(merger(lv, ct), dir, o, 0); err != nil {
+			t.Fatal(err)
+		}
+		r, err := store.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err := runMomentsStore(r, ms, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != want {
+			t.Errorf("checkpoint bytes %d:\n got %s\nwant %s", cp, out.String(), want)
+		}
 	}
 }

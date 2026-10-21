@@ -99,3 +99,23 @@ func TestMergeOneFileEmpty(t *testing.T) {
 		t.Fatalf("want io.EOF, got %v", err)
 	}
 }
+
+func TestMergeErrorIsSticky(t *testing.T) {
+	m := newTestMerger(nil, []string{ctAt(1), `{}`, ctAt(3)})
+	var err error
+	for err == nil {
+		_, err = m.Next()
+	}
+	if err == io.EOF {
+		t.Fatal("want decode error, got io.EOF")
+	}
+	for i := 0; i < 2; i++ {
+		r, again := m.Next()
+		if again == nil || again != err {
+			t.Fatalf("retry %d: want error %v, got %v", i, err, again)
+		}
+		if r.Localview != nil || r.Contract != nil {
+			t.Fatalf("retry %d: got a record after error: %+v", i, r)
+		}
+	}
+}

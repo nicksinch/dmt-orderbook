@@ -7,6 +7,8 @@ Python reference (`RefBook`) and moment generator used only to check the Go engi
 - `dmt.py`: readers, timestamp helpers and `RefBook`, a simple slow order book.
 - `gen_moments.py`: writes the moments (`top T`, `book <name> T`) to check.
 - `ref_moments.py`: answers the moments with `RefBook`.
+- `crash_test.py`: kills `ingest` with `kill -9` at random moments and checks the store against the reference output and a clean ingest.
+- `live_read_test.py`: queries the store while `ingest` is still running and checks the answers against the reference output.
 
 ```
 python3 -I tools/gen_moments.py localview.jsonl contracts.jsonl tmp/m100k.txt --limit 100000
