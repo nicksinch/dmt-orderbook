@@ -83,7 +83,7 @@ That is about 65 bytes per input line, with fixed-width integers and no compress
 
 The median is 165,060 lines/s, about 5% below stage 1's 173,000. Scaled linearly, that comes to about 1 min per day of feed, 7 min per week and 30 min per month.
 
-**Reading the binary store.** Walking every block and decoding every record, with no engine and no printing, takes 0.08 s for the whole store: about 12.2 M records/s. Parsing the JSONL takes about 5.5 s, so this is about 70 times faster. A `replay` that also builds and prints output will be slower; that is measured in stage 3.
+**Reading the binary store.** Walking every block and decoding every record, with no engine and no printing, takes 0.08 s for the whole store: about 12.2 M records/s. Parsing the JSONL takes about 5.5 s, so this is about 70 times faster. A `replay` that also builds and prints output will be slower; that is measured in the measurements session.
 
 **Book at time T** (`StateAt`: a full rebuild of every product at a random T, 200 samples per store):
 
@@ -110,3 +110,29 @@ tmp/storestat --store tmp/sall --jsonl task/localview.jsonl
 ```
 
 For another checkpoint spacing, add `--checkpoint-bytes 262144` (256 KB) or `--checkpoint-bytes 4194304` (4 MB) to `ingest`, using a fresh store directory.
+
+## Stage 3: query
+
+```
+go build -o tmp/ ./cmd/...
+tmp/query status                            --store tmp/store
+tmp/query book <product-name> <T>           --store tmp/store
+tmp/query top <T>                           --store tmp/store
+tmp/query replay <from> <to|follow>         --store tmp/store
+```
+
+`--store DIR` can go anywhere on the line (default `store`). `replay` prints a full book per product at `from`, then one line per changed product per input line, with only the changed levels (0 = gone). With `follow` it keeps streaming as `ingest` stores new data, until killed.
+
+**Correctness.** `replay` output compared with `tools/ref_replay.py` (built on `RefBook` only) using `cmp`, on the 1 MB-spacing store and the 256 KB-spacing store:
+
+| Window | from | to | Result |
+|---|---|---|---|
+| First 100k lines | `2026-09-24T09:00:00Z` | `2026-09-24T09:41:33.187577Z` | byte-identical on both stores |
+| Whole file | `2026-09-24T09:00:00Z` | `2026-09-24T13:00:00Z` | byte-identical on both stores |
+| Reconnect snapshot (line 331293) | `2026-09-24T10:23:40Z` | `2026-09-24T10:23:45Z` | byte-identical on both stores |
+| Inside the outage (ms-form `from`) | `2026-09-24T10:40:00.500Z` | `2026-09-24T10:58:00Z` | byte-identical on both stores |
+| Gate closure | `2026-09-24T11:14:00Z` | `2026-09-24T11:16:00Z` | byte-identical on both stores |
+| 12:00 next-day opening (scope entries print full books) | `2026-09-24T11:59:00Z` | `2026-09-24T12:01:00Z` | byte-identical on both stores |
+
+- `query book` and `query top` for 305 moments sampled from the stage-1 moments (every 125th plus the last): all equal to the `RefBook` answers.
+- Follow test (`python3 -I tools/follow_test.py`): two `follow` processes, one started at 09:00 and one at 12:00 (beyond the stored data at start), run during a whole-file `ingest`. Both outputs equal the plain `replay` of the finished store.

@@ -16,9 +16,6 @@ import (
 
 const indexEntrySize = 16
 
-// errStop ends a walk early without being an error.
-var errStop = errors.New("stop")
-
 // Reader answers from the store as it is now. It keeps only the directory:
 // every call opens the files, so it also works while ingest is writing.
 type Reader struct{ dir string }
@@ -171,51 +168,12 @@ func (r *Reader) Status() (int64, error) {
 // StateAt returns a fresh engine holding the state after every stored record
 // with time <= t.
 func (r *Reader) StateAt(t int64) (*engine.Engine, error) {
-	log, idx, err := r.openBoth()
-	if err != nil {
+	var got *engine.Engine
+	capture := func(e *engine.Engine) error { got = e; return nil }
+	if err := r.Replay(ReplayOptions{From: t, To: t}, capture, nil); err != nil {
 		return nil, err
 	}
-	defer closeAll(log, idx)
-	if log == nil {
-		return engine.New(), nil
-	}
-	ref, ok, err := findCheckpoint(idx, log, t)
-	if err != nil {
-		return nil, err
-	}
-	e := engine.New()
-	var ids []string
-	var off int64
-	if ok {
-		if e, ids, err = restoreCheckpoint(ref); err != nil {
-			return nil, err
-		}
-		off = ref.next
-	}
-	// Without a usable checkpoint this walks from offset 0 and replays every
-	// change; the start checkpoint (and any other) is skipped.
-	err = walk(log, off, func(off int64, h Header, payload []byte) error {
-		if h.Kind != KindChanges {
-			return nil
-		}
-		recs, err := DecodeRecords(payload)
-		if err != nil {
-			return fmt.Errorf("store: block at %d: %w", off, err)
-		}
-		for _, rec := range recs {
-			if rec.Define == nil && recTime(rec) > t {
-				return errStop
-			}
-			if ids, err = applyRecord(e, ids, rec); err != nil {
-				return fmt.Errorf("store: block at %d: %w", off, err)
-			}
-		}
-		return nil
-	})
-	if err != nil && err != errStop {
-		return nil, err
-	}
-	return e, nil
+	return got, nil
 }
 
 func recTime(rec Record) int64 {
@@ -269,15 +227,23 @@ func applyRecord(e *engine.Engine, ids []string, rec Record) ([]string, error) {
 		}
 		e.ApplyContract(feed.Contract{Time: c.T, ContractID: ids[c.PID], Name: c.Name, State: c.State, Deleted: c.Deleted})
 	default:
-		l := rec.Line
-		changes := make([]engine.ProductChange, len(l.Products))
-		for i, p := range l.Products {
-			if int(p.PID) >= len(ids) {
-				return ids, fmt.Errorf("pid %d out of range", p.PID)
-			}
-			changes[i] = engine.ProductChange{ContractID: ids[p.PID], Bids: p.Bids, Asks: p.Asks}
+		changes, err := lineChanges(ids, rec.Line)
+		if err != nil {
+			return ids, err
 		}
-		e.ApplyChanges(l.T, changes)
+		e.ApplyChanges(rec.Line.T, changes)
 	}
 	return ids, nil
+}
+
+// lineChanges turns a stored LINE into the changes that applying it makes.
+func lineChanges(ids []string, l *LineRec) ([]engine.ProductChange, error) {
+	changes := make([]engine.ProductChange, len(l.Products))
+	for i, p := range l.Products {
+		if int(p.PID) >= len(ids) {
+			return nil, fmt.Errorf("pid %d out of range", p.PID)
+		}
+		changes[i] = engine.ProductChange{ContractID: ids[p.PID], Bids: p.Bids, Asks: p.Asks}
+	}
+	return changes, nil
 }

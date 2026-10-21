@@ -9,6 +9,7 @@ import (
 
 	"dmt-orderbook/internal/engine"
 	"dmt-orderbook/internal/feed"
+	"dmt-orderbook/internal/output"
 	"dmt-orderbook/internal/store"
 )
 
@@ -55,24 +56,13 @@ func parseMoments(r io.Reader) ([]moment, error) {
 // stats counts the records applied.
 type stats struct{ Localview, Contracts int }
 
-type bookJSON struct {
-	Bid [][2]int64 `json:"bid"`
-	Ask [][2]int64 `json:"ask"`
-}
-
-type topJSON struct {
-	Bid *[2]int64 `json:"bid"`
-	Ask *[2]int64 `json:"ask"`
-}
-
 // runMoments drives the merge and writes one JSON line per moment, in input order.
 // It reads one record ahead and applies it only once its time is <= the moment's T.
 // It stops after the last moment; at end of input the rest are answered from the final state.
 func runMoments(m *feed.Merger, ms []moment, w io.Writer) (stats, error) {
 	var st stats
 	e := engine.New()
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
+	enc := output.NewEncoder(w)
 
 	var pending *feed.Record
 	eof := false
@@ -112,9 +102,9 @@ func answer(enc *json.Encoder, e *engine.Engine, mo moment) error {
 	var out any
 	var err error
 	if mo.Kind == "book" {
-		out, err = bookAnswer(e, mo)
+		out, err = output.Book(e, mo.Name, mo.T)
 	} else {
-		out, err = topAnswer(e, mo.T)
+		out, err = output.Top(e, mo.T)
 	}
 	if err != nil {
 		return err
@@ -125,8 +115,7 @@ func answer(enc *json.Encoder, e *engine.Engine, mo moment) error {
 // runMomentsStore answers each moment from the store with a fresh StateAt,
 // in the same JSON format as runMoments.
 func runMomentsStore(r *store.Reader, ms []moment, w io.Writer) error {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
+	enc := output.NewEncoder(w)
 	for _, mo := range ms {
 		e, err := r.StateAt(mo.T)
 		if err != nil {
@@ -137,43 +126,4 @@ func runMomentsStore(r *store.Reader, ms []moment, w io.Writer) error {
 		}
 	}
 	return nil
-}
-
-func bookAnswer(e *engine.Engine, mo moment) (map[string]*bookJSON, error) {
-	pb, ok, err := e.BookByName(mo.Name, mo.T)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return map[string]*bookJSON{mo.Name: nil}, nil
-	}
-	return map[string]*bookJSON{mo.Name: {Bid: pairs(pb.Bids), Ask: pairs(pb.Asks)}}, nil
-}
-
-// pairs converts levels to [price, qty] pairs; never nil, so it prints as [].
-func pairs(ls []engine.Level) [][2]int64 {
-	out := make([][2]int64, len(ls))
-	for i, l := range ls {
-		out[i] = [2]int64{l.Price, l.Qty}
-	}
-	return out
-}
-
-func topAnswer(e *engine.Engine, t int64) (map[string]topJSON, error) {
-	entries, err := e.Top(t)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]topJSON)
-	for _, te := range entries {
-		var tj topJSON
-		if te.Bid != nil {
-			tj.Bid = &[2]int64{te.Bid.Price, te.Bid.Qty}
-		}
-		if te.Ask != nil {
-			tj.Ask = &[2]int64{te.Ask.Price, te.Ask.Qty}
-		}
-		out[te.Name] = tj
-	}
-	return out, nil
 }
