@@ -1,8 +1,41 @@
 # Part 1 Note: The Order-Book Store
 
-Go, standard library only. Measured on an Apple M3 with a warm page cache. `README.md` has the full tables and the commands behind every number.
+Go, standard library only. Measured on an Apple M3 with a warm page cache. `MEASUREMENTS.md` has the full tables and the commands behind every number.
 
 ## How History Is Laid Out On Disk & Why ?
+
+Fixed-width little-endian integers, no compression. `str` = u32 length + bytes. Times are µs since the epoch.
+
+```
+log    = block, block, ...
+block  = header (45 B) + payload
+           changes:    cut after the line that reaches 64 KB, or once its first line is 2 ms old
+                       here: median 25 KB, max 96 KB (3 blocks over 64 KB)
+           checkpoint: one after every 1 MB of changes; here: 60 blocks, avg 105 KB, max 124 KB
+           readers reject payload_len > 64 MiB as corrupt
+
+header      magic "DMTB" 4 | crc32c 4 | kind 1 | payload_len 4
+            first_ts 8 | last_lv_line 8 | read_at 8 | flushed_at 8
+
+changes payload = records, each starting with a 1-byte type:
+  DEFINE    pid 4 | contractId str                            first time an id is seen
+  CONTRACT  t 8 | pid 4 | deleted 1 | name str | state str    a contract's area-46 state changed
+  LINE      t 8 | flags 1 | [raw time str] | n 4 | n products  one input line that changed levels
+
+product     pid 4 | n_bids 4 | n_asks 4 | levels, best first
+level       price 8 (EUR cents) | qty 8 (kW, new total; 0 = gone)
+
+LINE size   14 + 12 per product + 16 per level; a delta is 1 product, so 26 + 16 x levels
+            here: 961k LINE records, median 2 levels = 58 B, p99 8 levels = 154 B, mean 65 B
+            snapshots are the outliers: up to 57 products, 5,647 levels, 91 KB in one record
+
+checkpoint payload
+            all contractIds | all CONTRACT states | every non-empty book as products
+
+index  = entry, entry, ...      one per checkpoint
+entry       ts 8 | log offset 8
+```
+
 Two append-only files. 
 - `log` is a sequence of blocks, each holding whole input lines, with a CRC. 
   - A *changes* block holds, per input line, the new total of each price level it changed (0 = gone). 
@@ -21,9 +54,8 @@ Two append-only files.
 - `Varints` or `zstd` would make it smaller, but I kept the format simple.
 
 ### How much work a query book for an arbitrary moment does, and how that grows with the length of the history ?
-
-- **`query book` at any T for product P:
-  - ** Binary-search the index
+- **`query book`** at any T for product P:
+  - Binary-search the index
   - restore the checkpoint (about 105 KB)
   - apply the changes up to T (at most one spacing; 730 KB at the median). 
 - It takes 6.0 ms at the median and 6.9 ms at worst, as a whole process. 
@@ -48,17 +80,17 @@ Two append-only files.
 - Those blocks were written on time, so the delay is in `follow`, the pipe or OS scheduling. 
 - Merging two files needs the next contracts line before it releases a localview line, so the test feeds contracts ahead of localview.
 
-## What Exactly Survives A kill -9, And How You Know ? (DONE)
+## What Exactly Survives A kill -9, And How You Know ?
 - The log is append-only and written in blocks of whole input lines, each with a length and a CRC-32C, each with one `write()`. 
 - Bytes passed to `write()` sit in the page cache and survive the death of the process, 
 - so **a kill loses only the block still in ingest's memory (usually under 64 KB and 2–4 ms of input; at most 96 KB and 7.7 ms measured)** and can leave at most one partial block at the end.
 - Readers trust a block only if it is complete and its CRC matches, and stop at the first one that isn’t, so the store is always exactly lines 1..N, where N = `last_lv_line` of the last valid block
+- `index` entries have no CRC: the checkpoint block an entry points to is checked like any block, and a bad one falls back to the entry before it.
 - The above design decisions were also tested using the tool `tools/crash_test.py`
   - it killed `ingest` at random 20 times (18 mid-ingest)
-  - Every store opened, and its answers for 5,997 moments matched a clean store (stopped, not killed) cut at the same line, and it also matched a separate Python reference (see [Tools README](./tools/README.md)).
+  - Every store opened, and its answers for 5,997 moments matched a clean store (stopped, not killed) cut at the same line, and it also matched a separate Python reference (see [Tools Readme](./tools/README.md)).
   - A read loop during ingest and two `follow` runs also matched.
 - **Note:** There is no `fsync`, since `kill -9` keeps what `write()` accepted. Also, `ingest` does not resume; a new run needs a new directory.
-
 
 **Decisions made instead of asking DMT.**
 - *Feed:* "at T" uses our `timestamp_utc`. Contracts lines go first on a tie. Every snapshot line replaces the whole book. A `sequenceNo` gap is ignored, and the next snapshot corrects the book. A deleted order may lack `qty`. A line without the snapshot header is a delta. An `orderId` belongs to its contract. Time going backwards, a malformed line or a negative `qty` stops ingest. The input is two finished files, read once.

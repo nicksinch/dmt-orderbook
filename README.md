@@ -2,7 +2,7 @@
 
 ## Build and run
 
-Requires Go 1.27 or newer. Only the standard library is used, so nothing else needs installing.
+Requires Go 1.27 or newer. Only the standard library is used, so nothing else needs installing. No Go? Install it from https://go.dev/dl. With Go 1.21 or newer already installed, `go build` downloads 1.27 by itself.
 
 Put the two input files in `task/`:
 
@@ -34,6 +34,8 @@ bin/query replay 2026-09-24T10:00:00Z follow
 ```
 
 Times are UTC in ISO 8601, with or without a fraction of a second.
+
+Ingest takes about 6 s for the whole input. To query while it is still writing, start `query` right after `ingest` (for example `bin/ingest … & sleep 0.5; bin/query replay 2026-09-24T07:00:00Z follow`). `query` fails if the store directory does not exist yet.
 
 Run the tests:
 
