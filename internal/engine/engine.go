@@ -58,7 +58,7 @@ func (e *Engine) ApplyLocalview(lv feed.Localview) []ProductChange {
 // remembers the total before the line first touched it, then compares with the
 // total after, so a level that ends where it started is not reported.
 func (e *Engine) applyDelta(lv feed.Localview) []ProductChange {
-	clear(e.before)
+	clear(e.before) // e.before is cleared and reused rather than replaced with a new map so that a map isn't allocated for each of the ~1M lines. The behaviour is the same either way.
 	e.order = e.order[:0]
 	for _, co := range lv.Body {
 		b := e.books[co.ContractID]
@@ -89,7 +89,7 @@ func (e *Engine) applyDelta(lv feed.Localview) []ProductChange {
 		if now == before {
 			continue
 		}
-		pc := byID[k.id]
+		pc := byID[k.id] // start reporting the levels that differ after this line's changes
 		if pc == nil {
 			pc = &ProductChange{ContractID: k.id}
 			byID[k.id] = pc

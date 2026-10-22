@@ -8,3 +8,7 @@ __pycache__/
 .superpowers
 docs
 STORE_DESIGN.md
+apply-delta-chain.txt
+QUESTIONS.md
+bin/
+store/
