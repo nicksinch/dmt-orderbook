@@ -17,7 +17,7 @@ import (
 type Options struct {
 	CheckpointBytes int64            // change bytes between checkpoints
 	BlockBytes      int              // flush a block at this much pending payload
-	BlockAge        time.Duration    // flush a block this long after its first line
+	BlockAge        time.Duration    // flush a block this long after its first line; must be > 0
 	Now             func() time.Time // wall clock, replaceable in tests
 }
 
@@ -163,6 +163,19 @@ func (w *Writer) endLine() error {
 			return err
 		}
 		return w.checkpoint()
+	}
+	return nil
+}
+
+// FlushIfDue flushes the pending block if its first line is at least BlockAge
+// old. Ingest calls it on a timer, so a block is written even when no further
+// line arrives. It never checkpoints.
+func (w *Writer) FlushIfDue() error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.lines > 0 && w.o.Now().Sub(w.firstNow) >= w.o.BlockAge {
+		return w.flush()
 	}
 	return nil
 }

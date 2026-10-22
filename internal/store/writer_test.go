@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -347,6 +348,18 @@ func TestIngestBadLineFlushes(t *testing.T) {
 	}
 }
 
+func TestIngestRejectsZeroBlockAge(t *testing.T) {
+	o := DefaultOptions()
+	o.BlockAge = 0
+	dir := filepath.Join(t.TempDir(), "s")
+	if _, err := Ingest(merger(nil, nil), dir, o, 0); err == nil {
+		t.Fatal("want error")
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Fatal("store was created")
+	}
+}
+
 func TestIngestStopAfter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "s")
 	lv := []string{deltaLine(2, "NX_1", 100, 5), deltaLine(3, "NX_1", 101, 5), deltaLine(4, "NX_1", 102, 5)}
@@ -372,5 +385,93 @@ func TestWriterRejectsOversizedBlock(t *testing.T) {
 	defer w.Close()
 	if err := w.appendLog(Header{Kind: KindChanges}, make([]byte, maxPayloadLen+1)); err == nil {
 		t.Fatal("oversized payload was written")
+	}
+}
+
+func TestWriterFlushIfDue(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "s")
+	clk := &clock{time.Unix(1000, 0)}
+	e := engine.New()
+	w, err := Create(dir, e, testOptions(clk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	flushIfDue := func(want int) {
+		t.Helper()
+		if err := w.FlushIfDue(); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(readLog(t, dir)); n != want {
+			t.Fatalf("%d blocks, want %d", n, want)
+		}
+	}
+	flushIfDue(1) // nothing pending: only the start checkpoint
+	feedContract(t, w, e, contractLine(1, "NX_1", "QH-1"))
+	flushIfDue(1)
+	clk.t = clk.t.Add(time.Millisecond)
+	flushIfDue(1) // 1 ms old: not due yet
+	clk.t = clk.t.Add(time.Millisecond)
+	flushIfDue(2) // 2 ms old: flushed
+	if h := readLog(t, dir)[1].h; h.Kind != KindChanges || h.FlushedAt != clk.t.UnixMicro() {
+		t.Fatalf("header %+v", h)
+	}
+	flushIfDue(2) // nothing pending again
+}
+
+// ingestAsync runs Ingest in a goroutine and returns a channel with its result.
+func ingestAsync(lv io.Reader, ct []string, dir string, stopAfter int) chan error {
+	m := feed.NewMerger(lv, strings.NewReader(strings.Join(ct, "\n")+"\n"), "localview.jsonl", "contracts.jsonl")
+	done := make(chan error, 1)
+	go func() {
+		st, err := Ingest(m, dir, DefaultOptions(), stopAfter)
+		if err == nil && stopAfter > 0 && st.Localview != stopAfter {
+			err = fmt.Errorf("stats %+v", st)
+		}
+		done <- err
+	}()
+	return done
+}
+
+func TestIngestFlushesWithoutNextLine(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "s")
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	done := ingestAsync(pr, []string{contractLine(1, "NX_1", "QH-1")}, dir, 0)
+	if _, err := io.WriteString(pw, deltaLine(2, "NX_1", 100, 5)+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	var got int64
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if r, err := Open(dir); err == nil {
+			if got, _ = r.Status(); got == 1 {
+				break
+			}
+		}
+	}
+	if got != 1 {
+		t.Fatalf("status %d after 1 s of silence, want 1", got)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIngestStopAfterOpenPipe(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "s")
+	pr, pw := io.Pipe()
+	defer pw.Close() // lets the reader goroutine, blocked on the pipe, exit
+	done := ingestAsync(pr, []string{contractLine(1, "NX_1", "QH-1")}, dir, 2)
+	if _, err := io.WriteString(pw, deltaLine(2, "NX_1", 100, 5)+"\n"+deltaLine(3, "NX_1", 101, 5)+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Ingest did not return after stopAfter with the input still open")
 	}
 }

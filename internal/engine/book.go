@@ -77,8 +77,8 @@ func (b *Book) addQty(buy bool, price, delta int64, touch func(buy bool, price, 
 // Before changing any level it calls touch(buy, price, qtyBefore). touch may be nil.
 func (b *Book) applyOrder(o feed.Order, buy bool, touch func(buy bool, price, before int64)) {
 	if old, ok := b.orders[o.OrderID]; ok {
-		b.addQty(old.buy, old.price, -old.qty, touch)
-		delete(b.orders, o.OrderID)
+		b.addQty(old.buy, old.price, -old.qty, touch) // update the price level in the corresponding slice
+		delete(b.orders, o.OrderID)                   // delete old order from the map
 	}
 	if o.Deleted {
 		return
